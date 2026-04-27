@@ -1,0 +1,11 @@
+gender,age,income,credit_score,prediction
+male,35,55000,680,1
+female,29,48000,640,0
+male,42,72000,710,1
+female,31,51000,650,0
+male,26,45000,620,0
+female,39,69000,700,1
+male,47,81000,730,1
+female,24,43000,610,0
+male,33,59000,690,1
+female,45,76000,720,1
