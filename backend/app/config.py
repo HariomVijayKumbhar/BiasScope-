@@ -10,6 +10,8 @@ load_dotenv()
 class Settings:
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
+    groq_model: str = os.getenv("GROQ_MODEL", "llama3-8b-8192")
     environment: str = os.getenv("ENVIRONMENT", "development")
     max_upload_size_mb: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "50"))
     max_rows_for_counterfactual: int = int(os.getenv("MAX_ROWS_FOR_COUNTERFACTUAL", "1000"))
