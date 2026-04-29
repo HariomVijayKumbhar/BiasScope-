@@ -18,47 +18,55 @@ def _generate_json(prompt: str) -> dict[str, Any]:
         raise ValueError("GEMINI_API_KEY is not configured.")
     import google.generativeai as genai
 
-    genai.configure(api_key=settings.gemini_api_key)
-    model = genai.GenerativeModel(settings.gemini_model)
-    response = model.generate_content(prompt)
-    raw_text = response.text or ""
-    return _extract_json(raw_text)
+    try:
+        genai.configure(api_key=settings.gemini_api_key)
+        model = genai.GenerativeModel(settings.gemini_model)
+        response = model.generate_content(prompt)
+        # Handle cases where safety filters block the response
+        try:
+            raw_text = response.text or ""
+        except Exception as e:
+            print(f"Gemini response.text error: {e}")
+            raise ValueError(f"Gemini blocked the response or failed: {e}")
+            
+        return _extract_json(raw_text)
+    except Exception as e:
+        print(f"Gemini generation error: {e}")
+        raise
+
+
+def _fallback_detection(columns: list[str], sample_rows: list[dict], reason: str) -> dict[str, Any]:
+    target_candidates = [
+        "prediction", "predicted", "target", "label", "approved", "outcome", "decision", "survived"
+    ]
+    protected_candidates = ["gender", "sex", "race", "ethnicity", "age", "zip", "zipcode"]
+
+    lowered = {col.lower(): col for col in columns}
+    target = next((lowered[name] for name in target_candidates if name in lowered), columns[-1] if columns else "")
+    protected = [lowered[name] for name in protected_candidates if name in lowered]
+
+    sample_text = str(sample_rows[:3]).lower()
+    if any(k in sample_text for k in ["resume", "candidate", "hiring", "interview"]):
+        domain = "hiring"
+    elif any(k in sample_text for k in ["loan", "credit", "income", "default"]):
+        domain = "loan"
+    elif any(k in sample_text for k in ["patient", "diagnosis", "triage", "medical"]):
+        domain = "medical"
+    else:
+        domain = "other"
+
+    return {
+        "target_variable": target,
+        "protected_attributes": protected[:2],
+        "domain": domain,
+        "confidence": "low",
+        "reasoning": f"Heuristic fallback: {reason}",
+    }
 
 
 def detect_columns(columns: list[str], sample_rows: list[dict]) -> dict[str, Any]:
     if not settings.gemini_api_key:
-        target_candidates = [
-            "prediction",
-            "predicted",
-            "target",
-            "label",
-            "approved",
-            "outcome",
-            "decision",
-        ]
-        protected_candidates = ["gender", "sex", "race", "ethnicity", "age", "zip", "zipcode"]
-
-        lowered = {col.lower(): col for col in columns}
-        target = next((lowered[name] for name in target_candidates if name in lowered), columns[-1] if columns else "")
-        protected = [lowered[name] for name in protected_candidates if name in lowered]
-
-        sample_text = str(sample_rows[:3]).lower()
-        if any(k in sample_text for k in ["resume", "candidate", "hiring", "interview"]):
-            domain = "hiring"
-        elif any(k in sample_text for k in ["loan", "credit", "income", "default"]):
-            domain = "loan"
-        elif any(k in sample_text for k in ["patient", "diagnosis", "triage", "medical"]):
-            domain = "medical"
-        else:
-            domain = "other"
-
-        return {
-            "target_variable": target,
-            "protected_attributes": protected[:2],
-            "domain": domain,
-            "confidence": "low",
-            "reasoning": "Gemini key is not configured, so BiasScope used deterministic column heuristics.",
-        }
+        return _fallback_detection(columns, sample_rows, "Gemini key not configured.")
 
     prompt = f"""
 You are a data science expert specializing in AI fairness auditing.
@@ -81,11 +89,15 @@ Rules:
 - protected_attributes must only contain columns from the provided list
 - If unsure, set confidence to \"low\"
 """
-    return _generate_json(prompt)
+    try:
+        return _generate_json(prompt)
+    except Exception as e:
+        print(f"Falling back to heuristics due to AI error: {e}")
+        return _fallback_detection(columns, sample_rows, str(e))
 
 
 def explain_audit(audit_results: dict[str, Any]) -> dict[str, Any]:
-    if not settings.gemini_api_key:
+    def _fallback_explanation(audit_results: dict[str, Any], reason: str) -> dict[str, Any]:
         metrics = audit_results.get("bias_results", {}).get("metrics", [])
         failed = [m for m in metrics if not m.get("passed")]
         severity = "high" if failed else "low"
@@ -102,21 +114,24 @@ def explain_audit(audit_results: dict[str, Any]) -> dict[str, Any]:
                 "title": "Reweigh training samples",
                 "description": "Adjust sample weights to reduce imbalance between protected groups.",
                 "priority": "immediate",
-                "code": "from aif360.algorithms.preprocessing import Reweighing\\n# Apply reweighing before model training",
+                "code": "from aif360.algorithms.preprocessing import Reweighing\n# Apply reweighing before model training",
             },
             {
                 "title": "Review proxy features",
                 "description": "Remove or constrain highly correlated proxy features before retraining.",
                 "priority": "short-term",
-                "code": "high_risk = [f for f in proxy_features if f['correlation'] > 0.5]\\n# Drop or regularize these features",
+                "code": "high_risk = [f for f in proxy_features if f['correlation'] > 0.5]\n# Drop or regularize these features",
             },
         ]
         return {
-            "summary": "Gemini key is not configured, so this explanation is generated from deterministic fairness rules. Review failed metrics and proxy signals before using this model in production.",
+            "summary": f"Heuristic fallback (AI error: {reason}). Review failed metrics and proxy signals before using this model in production.",
             "severity": severity,
             "issues": issues or [{"title": "No critical issue detected", "description": "All primary fairness checks passed.", "metric": "overall"}],
             "recommendations": recommendations,
         }
+
+    if not settings.gemini_api_key:
+        return _fallback_explanation(audit_results, "Gemini key not configured.")
 
     prompt = f"""
 You are a bias auditing expert. Your audience is a compliance officer with no data science background.
@@ -145,7 +160,11 @@ Return ONLY valid JSON with this exact structure:
   ]
 }}
 """
-    return _generate_json(prompt)
+    try:
+        return _generate_json(prompt)
+    except Exception as e:
+        print(f"Explain fallback due to error: {e}")
+        return _fallback_explanation(audit_results, str(e))
 
 
 def chat_reply(message: str, audit_context: dict[str, Any], history: list[dict[str, str]]) -> str:
